@@ -86,7 +86,7 @@ pub fn sched_setaffinity(pid: Pid, cpuset: &CpuSet) -> Result<()> {
 }
 
 pub fn clone(cb: CloneCb,
-             stack: &mut [u8],
+             stack: Vec<u8>,
              flags: CloneFlags,
              signal: Option<c_int>)
              -> Result<Pid> {
@@ -97,10 +97,8 @@ pub fn clone(cb: CloneCb,
 
     let res = unsafe {
         let combined = flags.bits() | signal.unwrap_or(0);
-        let ptr = stack.as_mut_ptr().offset(stack.len() as isize);
-        let ptr_aligned = ptr.offset((ptr as usize % 16) as isize * -1);
         libc::clone(callback,
-                   ptr_aligned as *mut c_void,
+                   vec_to_stack(stack) as *mut c_void,
                    combined,
                    Box::into_raw(Box::new(cb)) as *mut c_void)
     };
@@ -120,6 +118,17 @@ pub fn setns(fd: RawFd, nstype: CloneFlags) -> Result<()> {
     Errno::result(res).map(drop)
 }
 
+/// Turns a vector into a stack pointer, forgetting about the allocation for the stack.
+fn vec_to_stack(mut stack: Vec<u8>) -> *mut u8 {
+    let stack_len = stack.len();
+    let top_ptr: *mut u8 = stack.as_mut_ptr() as *mut u8;
+    ::std::mem::forget(stack);
+    unsafe {
+        let base_ptr = top_ptr.offset(stack_len as isize);
+        base_ptr.offset((base_ptr as usize % ::std::mem::size_of::<usize>()) as isize * -1)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -136,12 +145,11 @@ mod test {
 
     #[test]
     fn simple_clone() {
-        // Stack *must* outlive the child.
         let mut stack = Vec::new();
         stack.resize(4096, 0u8);
         let pid = clone(
             clone_payload(),
-            stack.as_mut(),
+            stack,
             CloneFlags::CLONE_VM,
             Some(SIGCHLD),
         ).expect("Executing child");
